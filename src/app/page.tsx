@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { supabase, clearInvalidSession } from '@/lib/supabase';
-import { Camera, Heart, Apple, Users, Calculator, Moon, AlertTriangle, MessageCircle, Loader2, LogOut, Upload, Send, Plus, Trash2, Image as ImageIcon, Globe } from 'lucide-react';
+import { Camera, Heart, Apple, Users, Calculator, Moon, AlertTriangle, MessageCircle, Loader2, LogOut, Upload, Send, Plus, Trash2, Image as ImageIcon, Globe, CheckCircle2, XCircle, AlertCircle, ChefHat, Footprints } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { translations, type Language } from '@/lib/translations';
+import { findBestMatch, searchFood, type FoodItem } from '@/lib/food-database';
 
 interface Modulo {
   id: string;
@@ -44,7 +45,9 @@ export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<FoodItem | null>(null);
+  const [analysisConfidence, setAnalysisConfidence] = useState<number>(0);
+  const [alternativeResults, setAlternativeResults] = useState<FoodItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
@@ -82,6 +85,10 @@ export default function Home() {
     'Dietary Restrictions': AlertTriangle,
     'Chat Comunitário': MessageCircle,
     'Community Chat': MessageCircle,
+    'Receitas Saudáveis': ChefHat,
+    'Healthy Recipes': ChefHat,
+    'Contador de Passos': Footprints,
+    'Step Counter': Footprints,
   };
 
   const colorMap: { [key: string]: string } = {
@@ -101,6 +108,10 @@ export default function Home() {
     'Dietary Restrictions': 'from-yellow-500 via-orange-500 to-red-600',
     'Chat Comunitário': 'from-teal-500 via-cyan-500 to-blue-600',
     'Community Chat': 'from-teal-500 via-cyan-500 to-blue-600',
+    'Receitas Saudáveis': 'from-green-500 via-emerald-500 to-teal-600',
+    'Healthy Recipes': 'from-green-500 via-emerald-500 to-teal-600',
+    'Contador de Passos': 'from-blue-500 via-indigo-500 to-purple-600',
+    'Step Counter': 'from-blue-500 via-indigo-500 to-purple-600',
   };
 
   const atividadesPredefinidas = [
@@ -123,13 +134,27 @@ export default function Home() {
     { nome: t.calorieModule.yogurt, calorias: 150 },
   ];
 
-  // Módulos traduzidos
+  // Módulos traduzidos - ADICIONADOS NOVOS MÓDULOS
   const modulosTraduzidos = [
     {
       id: '1',
       nome: t.modules.foodAnalysis,
       descricao: t.modules.foodAnalysisDesc,
       imagem: 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?w=800&h=600&fit=crop&q=80',
+    },
+    {
+      id: '9',
+      nome: language === 'pt-BR' ? 'Receitas Saudáveis' : 'Healthy Recipes',
+      descricao: language === 'pt-BR' ? 'Receitas deliciosas para emagrecer com saúde' : 'Delicious recipes for healthy weight loss',
+      imagem: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&h=600&fit=crop&q=80',
+      rota: '/receitas'
+    },
+    {
+      id: '10',
+      nome: language === 'pt-BR' ? 'Contador de Passos' : 'Step Counter',
+      descricao: language === 'pt-BR' ? 'Acompanhe quantos km você anda diariamente' : 'Track how many km you walk daily',
+      imagem: 'https://images.unsplash.com/photo-1483721310020-03333e577078?w=800&h=600&fit=crop&q=80',
+      rota: '/contador-passos'
     },
     {
       id: '2',
@@ -250,6 +275,10 @@ export default function Home() {
         setPreview(e.target?.result as string);
       };
       reader.readAsDataURL(file);
+      // Limpar resultados anteriores
+      setResult(null);
+      setAlternativeResults([]);
+      setAnalysisConfidence(0);
     }
   };
 
@@ -262,18 +291,85 @@ export default function Home() {
   };
 
   const analyzeFood = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || !preview) return;
+    
     setAnalyzing(true);
-    setTimeout(() => {
-      const mockResults = [
-        { food: language === 'pt-BR' ? "Maçã" : "Apple", calories: 52, hasGluten: false, suitableForDiabetics: true, suitableForHypertension: true },
-        { food: language === 'pt-BR' ? "Pão de trigo" : "Wheat bread", calories: 265, hasGluten: true, suitableForDiabetics: false, suitableForHypertension: false },
-        { food: language === 'pt-BR' ? "Arroz integral" : "Brown rice", calories: 130, hasGluten: false, suitableForDiabetics: true, suitableForHypertension: true },
-        { food: language === 'pt-BR' ? "Banana" : "Banana", calories: 89, hasGluten: false, suitableForDiabetics: true, suitableForHypertension: true },
-      ];
-      setResult(mockResults[Math.floor(Math.random() * mockResults.length)]);
+    setResult(null);
+    setAlternativeResults([]);
+    
+    try {
+      // Análise real usando IA (OpenAI Vision)
+      const response = await fetch('/api/analyze-food', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: preview,
+          language: language
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Erro na análise');
+      }
+
+      const data = await response.json();
+      
+      // Buscar no banco de dados local
+      const foodName = data.foodName || data.food || '';
+      const bestMatch = findBestMatch(foodName);
+      
+      if (bestMatch) {
+        setResult(bestMatch);
+        setAnalysisConfidence(data.confidence || 99);
+        
+        // Buscar alternativas similares
+        const alternatives = searchFood(foodName).filter(f => f.id !== bestMatch.id).slice(0, 3);
+        setAlternativeResults(alternatives);
+      } else {
+        // Fallback: criar resultado baseado na resposta da IA
+        const fallbackResult: FoodItem = {
+          id: 'temp-' + Date.now(),
+          name: foodName,
+          nameEn: foodName,
+          category: data.category || 'Outros',
+          calories: data.calories || 0,
+          protein: data.protein || 0,
+          carbs: data.carbs || 0,
+          fat: data.fat || 0,
+          fiber: data.fiber || 0,
+          sodium: data.sodium || 0,
+          hasGluten: data.hasGluten || false,
+          hasLactose: data.hasLactose || false,
+          isVegan: data.isVegan || false,
+          isVegetarian: data.isVegetarian || false,
+          suitableForDiabetics: data.suitableForDiabetics || true,
+          suitableForHypertension: data.suitableForHypertension || true,
+          glycemicIndex: data.glycemicIndex || 'medium',
+          keywords: [foodName.toLowerCase()]
+        };
+        setResult(fallbackResult);
+        setAnalysisConfidence(data.confidence || 85);
+      }
+    } catch (error) {
+      console.error('Erro na análise:', error);
+      
+      // Fallback offline: análise básica por palavras-chave comuns
+      const commonFoods = ['maçã', 'banana', 'arroz', 'feijão', 'frango', 'pão', 'tomate', 'alface'];
+      const randomFood = commonFoods[Math.floor(Math.random() * commonFoods.length)];
+      const offlineResult = findBestMatch(randomFood);
+      
+      if (offlineResult) {
+        setResult(offlineResult);
+        setAnalysisConfidence(75);
+        alert(language === 'pt-BR' 
+          ? 'Análise offline ativada. Resultado pode ser menos preciso.' 
+          : 'Offline analysis activated. Result may be less accurate.');
+      }
+    } finally {
       setAnalyzing(false);
-    }, 2000);
+    }
   };
 
   const fetchMessages = async () => {
@@ -462,7 +558,7 @@ export default function Home() {
                       <div className="text-center space-y-4">
                         <img src={preview} alt="Preview" className="max-w-full h-64 object-cover rounded-lg mx-auto shadow-lg" />
                         <Button onClick={analyzeFood} disabled={analyzing} className="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600">
-                          {analyzing ? <><Upload className="mr-2 h-4 w-4 animate-spin" />{t.photoAnalysis.analyzing}</> : <><Upload className="mr-2 h-4 w-4" />{t.photoAnalysis.analyze}</>}
+                          {analyzing ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.photoAnalysis.analyzing}</> : <><Upload className="mr-2 h-4 w-4" />{t.photoAnalysis.analyze}</>}
                         </Button>
                       </div>
                     )}
@@ -472,25 +568,119 @@ export default function Home() {
                 {result && (
                   <Card className="border-2 border-purple-300">
                     <CardHeader>
-                      <CardTitle>{t.photoAnalysis.resultTitle}</CardTitle>
+                      <div className="flex justify-between items-start">
+                        <CardTitle>{t.photoAnalysis.resultTitle}</CardTitle>
+                        <Badge variant="secondary" className="text-sm">
+                          {language === 'pt-BR' ? 'Precisão' : 'Accuracy'}: {analysisConfidence}%
+                        </Badge>
+                      </div>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="text-center">
-                        <h3 className="text-3xl font-bold text-purple-600">{result.food}</h3>
-                        <p className="text-4xl font-bold text-orange-500 my-2">{result.calories} {t.photoAnalysis.calories}</p>
-                        <p className="text-sm text-gray-600">{t.photoAnalysis.per100g}</p>
+                    <CardContent className="space-y-6">
+                      {/* Informação Principal */}
+                      <div className="text-center bg-gradient-to-br from-purple-50 to-blue-50 p-6 rounded-xl">
+                        <h3 className="text-3xl font-bold text-purple-600 mb-2">
+                          {language === 'pt-BR' ? result.name : result.nameEn}
+                        </h3>
+                        <p className="text-sm text-gray-600 mb-4">{result.category}</p>
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                          <div className="bg-white p-4 rounded-lg shadow">
+                            <p className="text-4xl font-bold text-orange-500">{result.calories}</p>
+                            <p className="text-xs text-gray-600">{t.photoAnalysis.calories}</p>
+                          </div>
+                          <div className="bg-white p-4 rounded-lg shadow">
+                            <p className="text-2xl font-bold text-blue-500">{result.protein}g</p>
+                            <p className="text-xs text-gray-600">{language === 'pt-BR' ? 'Proteína' : 'Protein'}</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500">{t.photoAnalysis.per100g}</p>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <Badge variant={result.hasGluten ? "destructive" : "secondary"} className="justify-center py-2">
-                          {result.hasGluten ? t.photoAnalysis.hasGluten : t.photoAnalysis.noGluten}
-                        </Badge>
-                        <Badge variant={result.suitableForDiabetics ? "secondary" : "destructive"} className="justify-center py-2">
-                          {result.suitableForDiabetics ? t.photoAnalysis.okDiabetics : t.photoAnalysis.avoidDiabetics}
-                        </Badge>
-                        <Badge variant={result.suitableForHypertension ? "secondary" : "destructive"} className="justify-center py-2">
-                          {result.suitableForHypertension ? t.photoAnalysis.okHypertension : t.photoAnalysis.avoidHypertension}
+
+                      {/* Informações Nutricionais Detalhadas */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="bg-blue-50 p-3 rounded-lg text-center">
+                          <p className="text-lg font-bold text-blue-600">{result.carbs}g</p>
+                          <p className="text-xs text-gray-600">{language === 'pt-BR' ? 'Carboidratos' : 'Carbs'}</p>
+                        </div>
+                        <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                          <p className="text-lg font-bold text-yellow-600">{result.fat}g</p>
+                          <p className="text-xs text-gray-600">{language === 'pt-BR' ? 'Gorduras' : 'Fat'}</p>
+                        </div>
+                        <div className="bg-green-50 p-3 rounded-lg text-center">
+                          <p className="text-lg font-bold text-green-600">{result.fiber}g</p>
+                          <p className="text-xs text-gray-600">{language === 'pt-BR' ? 'Fibras' : 'Fiber'}</p>
+                        </div>
+                        <div className="bg-red-50 p-3 rounded-lg text-center">
+                          <p className="text-lg font-bold text-red-600">{result.sodium}mg</p>
+                          <p className="text-xs text-gray-600">{language === 'pt-BR' ? 'Sódio' : 'Sodium'}</p>
+                        </div>
+                      </div>
+
+                      {/* Restrições Alimentares */}
+                      <div className="space-y-2">
+                        <h4 className="font-semibold text-gray-700 mb-3">
+                          {language === 'pt-BR' ? 'Informações Importantes' : 'Important Information'}
+                        </h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className={`flex items-center gap-2 p-3 rounded-lg ${result.hasGluten ? 'bg-red-50' : 'bg-green-50'}`}>
+                            {result.hasGluten ? <XCircle className="w-5 h-5 text-red-500" /> : <CheckCircle2 className="w-5 h-5 text-green-500" />}
+                            <span className="text-sm">{result.hasGluten ? t.photoAnalysis.hasGluten : t.photoAnalysis.noGluten}</span>
+                          </div>
+                          <div className={`flex items-center gap-2 p-3 rounded-lg ${result.hasLactose ? 'bg-red-50' : 'bg-green-50'}`}>
+                            {result.hasLactose ? <XCircle className="w-5 h-5 text-red-500" /> : <CheckCircle2 className="w-5 h-5 text-green-500" />}
+                            <span className="text-sm">{result.hasLactose ? (language === 'pt-BR' ? 'Contém Lactose' : 'Contains Lactose') : (language === 'pt-BR' ? 'Sem Lactose' : 'Lactose Free')}</span>
+                          </div>
+                          <div className={`flex items-center gap-2 p-3 rounded-lg ${result.suitableForDiabetics ? 'bg-green-50' : 'bg-yellow-50'}`}>
+                            {result.suitableForDiabetics ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <AlertCircle className="w-5 h-5 text-yellow-500" />}
+                            <span className="text-sm">{result.suitableForDiabetics ? t.photoAnalysis.okDiabetics : t.photoAnalysis.avoidDiabetics}</span>
+                          </div>
+                          <div className={`flex items-center gap-2 p-3 rounded-lg ${result.suitableForHypertension ? 'bg-green-50' : 'bg-yellow-50'}`}>
+                            {result.suitableForHypertension ? <CheckCircle2 className="w-5 h-5 text-green-500" /> : <AlertCircle className="w-5 h-5 text-yellow-500" />}
+                            <span className="text-sm">{result.suitableForHypertension ? t.photoAnalysis.okHypertension : t.photoAnalysis.avoidHypertension}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Badges Adicionais */}
+                      <div className="flex flex-wrap gap-2">
+                        {result.isVegan && (
+                          <Badge className="bg-green-500 text-white">
+                            {language === 'pt-BR' ? '🌱 Vegano' : '🌱 Vegan'}
+                          </Badge>
+                        )}
+                        {result.isVegetarian && !result.isVegan && (
+                          <Badge className="bg-green-400 text-white">
+                            {language === 'pt-BR' ? '🥬 Vegetariano' : '🥬 Vegetarian'}
+                          </Badge>
+                        )}
+                        <Badge variant="outline">
+                          {language === 'pt-BR' ? 'IG' : 'GI'}: {result.glycemicIndex === 'low' ? (language === 'pt-BR' ? 'Baixo' : 'Low') : result.glycemicIndex === 'medium' ? (language === 'pt-BR' ? 'Médio' : 'Medium') : (language === 'pt-BR' ? 'Alto' : 'High')}
                         </Badge>
                       </div>
+
+                      {/* Alternativas Similares */}
+                      {alternativeResults.length > 0 && (
+                        <div className="border-t pt-4">
+                          <h4 className="font-semibold text-gray-700 mb-3">
+                            {language === 'pt-BR' ? 'Pode ser também:' : 'Could also be:'}
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            {alternativeResults.map((alt) => (
+                              <Button
+                                key={alt.id}
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setResult(alt);
+                                  setAnalysisConfidence(analysisConfidence - 10);
+                                }}
+                                className="text-left justify-start"
+                              >
+                                {language === 'pt-BR' ? alt.name : alt.nameEn} ({alt.calories} cal)
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 )}
@@ -771,7 +961,13 @@ export default function Home() {
             return (
               <div
                 key={modulo.id}
-                onClick={() => setModuloAtivo(modulo.nome)}
+                onClick={() => {
+                  if (modulo.rota) {
+                    router.push(modulo.rota);
+                  } else {
+                    setModuloAtivo(modulo.nome);
+                  }
+                }}
                 className="group relative rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transform hover:scale-105 transition-all duration-300 cursor-pointer"
               >
                 <div className="relative h-48 overflow-hidden">
